@@ -54,12 +54,21 @@ const App = () => {
     return onAuthStateChanged(auth, setUser);
   }, [initAuth, setUser]);
 
-  useEffect(() => {
+  // In src/App.jsx
+useEffect(() => {
+  const unsubscribe = onAuthStateChanged(auth, (user) => {
     if (user) {
-      const unsubscribe = fetchExpenses(user.uid);
-      return () => unsubscribe && unsubscribe();
+      // Logic to set user in your Zustand store
+      useStore.getState().setUser(user); 
+      // Ensure you call your fetch function here
+      useStore.getState().fetchExpenses(user.uid);
+    } else {
+      useStore.getState().setUser(null);
     }
-  }, [user, fetchExpenses]);
+  });
+
+  return () => unsubscribe();
+}, [user,fetchExpenses]);
 
   const formatINR = (val) => {
     return val.toLocaleString('en-IN', {

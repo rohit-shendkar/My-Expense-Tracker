@@ -25,7 +25,11 @@ export default function ExpenseList({ expenses, isSyncing, deleteExpense }) {
               </div>
               <div className="flex items-center gap-6">
                 <span className="text-lg font-light text-stone-800 tracking-tight">₹{formatINR(exp.amount)}</span>
-                <button onClick={() => deleteExpense(exp.id)} className="opacity-0 group-hover:opacity-100 p-1 text-stone-200 hover:text-stone-800 transition-all duration-300">
+                <button onClick={() => {
+                  if (window.confirm('Are you sure you want to delete this entry?')) {
+                    deleteExpense(exp.id);
+                  }
+                }} className="opacity-0 group-hover:opacity-100 p-1 text-stone-200 hover:text-red-500 transition-all duration-300">
                   <Trash2 className="w-4 h-4" strokeWidth={1.2} />
                 </button>
               </div>

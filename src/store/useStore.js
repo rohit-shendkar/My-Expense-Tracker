@@ -2,21 +2,20 @@ import { create } from 'zustand';
 import { auth, db, appId } from '../api/firebase';
 import { 
   onSnapshot, collection, 
-  doc, addDoc, deleteDoc, serverTimestamp 
-} from 'firebase/firestore'; // plus auth imports
+  doc, addDoc, deleteDoc, serverTimestamp,
+  query, orderBy, limit
+} from 'firebase/firestore';
 import { 
-  getAuth, 
-  GoogleAuthProvider, 
-  signInWithPopup, 
   signOut, 
-  onAuthStateChanged, 
   signInWithCustomToken, 
   signInWithEmailAndPassword,
-  createUserWithEmailAndPassword
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail
 } from 'firebase/auth';
 
 export const useStore = create((set, get) => ({
   user: null,
+  activeUserId: null,
   expenses: [],
   isSyncing: false,
   errorMsg: null,
@@ -29,7 +28,6 @@ export const useStore = create((set, get) => ({
   
   initAuth: async () => {
     try {
-      // RULE 3: Ensure auth is initialized before any queries
       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
         await signInWithCustomToken(auth, __initial_auth_token);
       }
@@ -42,28 +40,36 @@ export const useStore = create((set, get) => ({
 
   fetchExpenses: (userId) => {
     if (!userId) return;
-    set({ isSyncing: true });
-
-    // RULE 1: Strict Path Implementation
-    const expensesRef = collection(db, 'artifacts', appId, 'users', userId, 'expenses');
     
-    const unsubscribe = onSnapshot(expensesRef, 
+    const state = get();
+    
+    // If we already have a subscription for this user, skip
+    if (state.activeUserId === userId && state.expenses.length > 0) {
+      set({ isSyncing: false });
+      return () => {};
+    }
+    
+    set({ isSyncing: true, activeUserId: userId, expenses: [] });
+
+    // Optimized query - order by date desc, limit to recent 200
+    const expensesRef = collection(db, 'artifacts', appId, 'users', userId, 'expenses');
+    const expensesQuery = query(
+      expensesRef,
+      orderBy('date', 'desc'),
+      limit(200)
+    );
+    
+    const unsubscribe = onSnapshot(expensesQuery, 
       (snapshot) => {
+        // Skip if no changes
+        if (snapshot.metadata.hasPendingWrites) return;
+        
         const loadedExpenses = snapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data()
         }));
         
-        // RULE 2: Manual sort in memory
-        const sorted = loadedExpenses.sort((a, b) => {
-          const dateDiff = new Date(b.date) - new Date(a.date);
-          if (dateDiff !== 0) return dateDiff;
-          const timeA = a.createdAt?.seconds || 0;
-          const timeB = b.createdAt?.seconds || 0;
-          return timeB - timeA;
-        });
-        
-        set({ expenses: sorted, isSyncing: false, isOnline: true });
+        set({ expenses: loadedExpenses, isSyncing: false, isOnline: true });
       },
       (error) => {
         console.error("Firestore sync error:", error);
@@ -78,17 +84,16 @@ export const useStore = create((set, get) => ({
     const { user } = get();
     if (!user) return;
 
+    set({ isSyncing: true, errorMsg: null });
     try {
-      set({ isSyncing: true });
       const expensesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'expenses');
       await addDoc(expensesRef, {
         ...data,
         createdAt: serverTimestamp()
       });
-      set({ isSyncing: false });
     } catch (error) {
       console.error("Error adding expense:", error);
-      set({ isSyncing: false, errorMsg: "Cloud ledger update failed." });
+      set({ errorMsg: "Failed to add expense. Please try again." });
     }
   },
 
@@ -96,14 +101,13 @@ export const useStore = create((set, get) => ({
     const { user } = get();
     if (!user) return;
 
+    set({ isSyncing: true, errorMsg: null });
     try {
-      set({ isSyncing: true });
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'expenses', expenseId);
       await deleteDoc(docRef);
-      set({ isSyncing: false });
     } catch (error) {
       console.error("Error deleting expense:", error);
-      set({ isSyncing: false, errorMsg: "Cloud ledger removal failed." });
+      set({ errorMsg: "Failed to delete expense. Please try again." });
     }
   },
 
@@ -111,9 +115,12 @@ export const useStore = create((set, get) => ({
   getIdentifier: (email) => `${email}@ledger.app`,
 
   login: async (email, password) => {
-    set({ errorMsg: null, isSyncing: true });
+    const { setUser, fetchExpenses } = get();
+    set({ errorMsg: null, isSyncing: true, expenses: [] });
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      setUser(userCredential.user);
+      fetchExpenses(userCredential.user.uid);
       set({ isSyncing: false });
       return true;
     } catch (error) {
@@ -122,6 +129,21 @@ export const useStore = create((set, get) => ({
       if (error.code === 'auth/invalid-email') msg = "Malformed email address.";
       if (error.code === 'auth/user-not-found') msg = "Member profile not located.";
       if (error.code === 'auth/wrong-password') msg = "Security key is incorrect.";
+      if (error.code === 'auth/invalid-credential') msg = "Invalid credentials.";
+      set({ errorMsg: msg, isSyncing: false });
+      return false;
+    }
+  },
+
+  resetPassword: async (email) => {
+    set({ errorMsg: null, isSyncing: true });
+    try {
+      await sendPasswordResetEmail(auth, email);
+      set({ isSyncing: false, errorMsg: "Password reset link sent to your email." });
+      return true;
+    } catch (error) {
+      let msg = "Failed to send reset email.";
+      if (error.code === 'auth/user-not-found') msg = "No account with this email.";
       set({ errorMsg: msg, isSyncing: false });
       return false;
     }
@@ -146,9 +168,17 @@ export const useStore = create((set, get) => ({
   logout: async () => {
     try {
       await signOut(auth);
-      set({ expenses: [] });
+      set({ 
+        user: null, 
+        activeUserId: null,
+        expenses: [], 
+        isSyncing: false, 
+        errorMsg: null,
+        isOnline: true 
+      });
     } catch (error) {
       console.error("Logout error:", error);
+      set({ user: null, expenses: [], activeUserId: null });
     }
   }
 }));

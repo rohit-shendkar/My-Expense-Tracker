@@ -153,10 +153,8 @@ function App() {
     try {
       await signOut(auth);
       setUser(null);
-      // Clear all local state
       localStorage.removeItem('rememberedEmail');
-      // Force a page reload to clear all state
-      window.location.href = '/login';
+      navigate('/');
     } catch (error) {
       console.error("Logout error:", error);
     }

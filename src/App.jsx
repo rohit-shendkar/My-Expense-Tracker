@@ -152,7 +152,16 @@ function App() {
   const handleLogout = useCallback(async () => {
     try {
       await signOut(auth);
+      // Reset ALL state
       setUser(null);
+      useStore.setState({ 
+        user: null, 
+        expenses: [], 
+        isSyncing: false, 
+        errorMsg: null,
+        isOnline: true,
+        activeUserId: null
+      });
       localStorage.removeItem('rememberedEmail');
       navigate('/');
     } catch (error) {
